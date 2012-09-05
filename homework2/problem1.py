@@ -1,6 +1,5 @@
 #
-# George Burgess
-# Problem 1 for Homework 2 - Intro/UNIX
+# ECE 2524 Homework 2 problem 1 George Burgess
 # Parse /etc/passwd, output each user's name and default shell.
 #
 
