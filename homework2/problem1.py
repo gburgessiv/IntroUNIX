@@ -35,7 +35,6 @@ if __name__ == "__main__":
         pwdict = parsePasswd(pc)
 
         if len(pwdict) > 0:
-            print("Name\tShell")
             for i in pwdict:
                 print(i + "\t" + pwdict[i]);
         else:
