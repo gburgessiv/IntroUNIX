@@ -44,7 +44,7 @@ def multLoop(handle, ignoreBlanks = False, ignoreInvalid = False):
     return True
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description = 'Multiply sets of 2 floats taken '
+    parser = argparse.ArgumentParser(description = 'Multiply sets of floats taken '
                                      'from stdin; puts result to stdout.')
 
     parser.parse_args(sys.argv[1:])

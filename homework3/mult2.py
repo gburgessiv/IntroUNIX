@@ -15,8 +15,6 @@ def multLoop(handle, ignoreBlanks = False, ignoreInvalid = False):
                 if accum is not None:
                     print(str(accum))
                     accum = None
-                else:
-                    print("No values entered!")
             continue
 
         cur = None
@@ -44,7 +42,7 @@ def multLoop(handle, ignoreBlanks = False, ignoreInvalid = False):
     return True
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description = 'Multiply sets of 2 floats taken '
+    parser = argparse.ArgumentParser(description = 'Multiply sets of floats taken '
                                      'from stdin; puts result to stdout.')
 
     parser.add_argument('--ignore-blank', action='store_true', default=False)
