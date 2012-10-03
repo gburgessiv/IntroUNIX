@@ -3,6 +3,7 @@
 import attribute
 import copy
 import parser
+import re
 import record
 
 requests = {}
@@ -13,15 +14,21 @@ def addRequest(reqName, method):
     global requests
     requests[reqName.lower()] = method
 
-def _toRecords(recStr, factories, isMatch = False):
+def _toRecords(recStr, factories, isMatch = False, justRecords = True):
     if recStr is None:
         return None
     x = parser.parseTextBlock(recStr, factories, isMatch)
 
-    if x is None or not "Record" in x:
+    if x is None:
         return None
 
-    return x["Record"]
+    if justRecords:
+        if not "Record" in x:
+            return None
+
+        return x["Record"]
+
+    return x
 
 def _findEntries(match, factories, records, defaultAll = False):
     matchRecs = _toRecords(match, factories, True)
@@ -42,11 +49,51 @@ def _findEntries(match, factories, records, defaultAll = False):
     return result
 
 def _listEntries(match, factories, records):
-    listed = _findEntries(match, factories, records, True)
+    try:
+        listed = _findEntries(match, factories, records, defaultAll = True)
+    except Exception as e:
+        return (False, str(e))
 
     if listed is None or len(listed) == 0:
         return (True, None)
 
+    allList = parser.parseTextBlock(match, factories, False)
+    
+    # Sorting
+    if allList is not None and 'Modifier' in allList and len(allList['Modifier']) > 0:
+        modifiers = allList['Modifier']
+        fields = None
+        for i in modifiers:
+            sortresult = re.match(r'\s*sort\s+(?P<Type>\w+)\s+by\s+(?P<Fields>.*)', i)
+            if sortresult is None:
+                return (False, "Could not interpret modifier '" + i + "'")
+            else:
+                results = sortresult.groups()
+                if results[0] not in factories:
+                    return (False, results[0] + ' is not a valid record')
+
+                unsorted_records = [i[1] for i in listed if i[0] == results[0]]
+                listed = [x for x in listed if x[0] != results[0]]
+
+                if len(unsorted_records) == 0:
+                    continue
+
+                sortby = []
+                
+                for a in results[1].split(','):
+                    a = a.lstrip().rstrip()
+                    if not unsorted_records[0].hasAttribute(a):
+                        return (False, 'asking to sort by invalid attribute ' + a + ' from ' + results[0])
+                    sortby.append(a)
+                
+                # Now sort from least to most important (most important first)
+                while len(sortby) > 0:
+                    x = sortby.pop()
+                    unsorted_records = sorted(unsorted_records, key = lambda z: z.getAttribute(x))
+
+                listed += [(results[0], x) for x in unsorted_records]
+
+    # Making string of [potentially sorted] keys...
     result = ""
     for k, r in listed:
         result += "{0}: {1}\n".format(k, str(r))
@@ -58,21 +105,25 @@ def _addEntries(entry, factories, records):
     try:
         recs = _toRecords(entry, factories)
     except:
-        return (False, "One or more records had invalid data. Aborting.")
-
-    if recs is None:
-        return (False, None)
+        return (False, "One or more records had invalid data.")
 
     validRecs = [(k, i) for (k, i) in recs if i.isValid()]
 
     if len(validRecs) != len(recs):
         print("WARNING: " + str(recs - validRecs) + " records were incomplete")
+
+    if records is None:
+        records = []
+
     records += validRecs
     return (True, None)
 
 def _delEntries(entry, factories, records):
     "Default delete entries method"
-    match = _toRecords(entry, factories, True)
+    try:
+        match = _toRecords(entry, factories, True)
+    except Exception as e:
+        return (False, str(e))
     if match is None:
         return (False, None)
     
@@ -93,7 +144,11 @@ def _delEntries(entry, factories, records):
     return (True, None)
 
 def _updateEntries(entry, factories, records):
-    match = _toRecords(entry, factories, True)
+    updatesFailed = False
+    try:
+        match = _toRecords(entry, factories, True)
+    except Exception as e:
+        return (False, str(e))
     
     if match is None:
         return (False, "Couldn't find match records")
@@ -117,15 +172,25 @@ def _updateEntries(entry, factories, records):
         m = mt[1]
         s = st[1]
         mset = [z[1] for z in records if z[1].meetsCriteria(m)]
+        print("WHUT")
         for i in mset:
             for (k,v) in [z for z in s.attributes.items() if not z[1].isNull()]:
+                linemsg = ""
                 try:
                     i.setAttribute(k, v.asNatural())
+                    linemsg = "Update of field {0} to {1} succeeded".format(
+                            k, str(v.asNatural()))
                 except Exception as e:
+                    updatesFailed = True
+                    linemsg = "Failed to update field {0} to {1}.".format(
+                             k, str(v.asNatural()))
+                if len(linemsg) > 0:
                     if len(msg) > 0:
                         msg += '\n'
-                    msg += "Failed to update field {0} to {1}.".format(
-                             k, str(v.asNatural()))
+                    msg += linemsg
+
+    if not updatesFailed:
+        msg = ""
 
     return (True, msg if len(msg) > 0 else None)
     

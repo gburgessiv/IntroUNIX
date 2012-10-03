@@ -81,6 +81,9 @@ class Record:
         self.attributes[attrStr] = attr
         return True
 
+    def hasAttribute(self, attrStr):
+        return attrStr in self.attributes
+
     def meetsCriteria(self, criteria):
         "Returns whether the given statement meets the given criteria."
 

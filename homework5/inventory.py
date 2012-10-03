@@ -42,10 +42,27 @@ def readRecords(filePath):
     with open(filePath, 'r') as fi:
         txt = fi.read()
 
-    if txt is not None:
+    if txt is not None and len(txt.rstrip().lstrip()) > 0:
         records = parser.parseTextBlock(txt, facts)
+    else:
+        return None
 
     return records['Record']
+
+def commitRecords(filePath, records):
+    if records is None:
+        records = []
+    else:
+        records = [x for x in records if x is not None 
+                                      and x[0] is not None
+                                      and x[1] is not None]
+
+    with open(filePath, 'w') as fi:
+        for x in records:
+            try:
+                fi.write(x[0] + ": " + str(x[1]) + '\n')
+            except Exception as e:
+                print("Failed to write a record! :( (" + str(e) + ")")
 
 def getFactories():
     "Returns all standard factories for records."
@@ -61,7 +78,6 @@ def getFactories():
     return {"Part": cfact}
 
 if __name__ == "__main__":
-
     aparser = argparse.ArgumentParser(description="Show available parts")
     aparser.add_argument('-f', '--file', metavar='file',
                         help="File to read from/write to")
@@ -80,32 +96,39 @@ if __name__ == "__main__":
 
     try:
         recs = readRecords(targFile)
-    except e:
-        sys.stderr.write("Error reading file.\n")
+    except Exception as e:
+        sys.stderr.write("Error reading file. " + str(e) + "\n")
         sys.exit(3)
 
-    instream = ""
-    try:
-        while not instream.endswith('\n\n'):
-            instream += input() + '\n'
-    except EOFError:
-        pass
-    except Exception as e:
-        sys.stderr.write(str(e))
-        sys.exit(4)
+    keepGoing = True
 
-    instream = instream.rstrip().lstrip()
+    while keepGoing:
+        instream = ""
+        try:
+            while not instream.endswith('\n\n\n'):
+                instream += input().lstrip().rstrip() + '\n'
+        except EOFError:
+            keepGoing = False
+        except Exception as e:
+            sys.stderr.write(str(e))
+            sys.exit(4)
 
-    (res, strres) = protocol.interpretMessage(instream, getFactories(), recs)
+        instream = instream.rstrip().lstrip()
 
-    if res is False:
-        sys.stderr.write("Operation failed!\n")
-        if strres is not None:
-            sys.stderr.write(strres + "\n")
-        sys.exit(5)
+        if len(instream) > 0:
+            if recs is None:
+                recs = []
 
-    if strres is not None:
-        print(strres)
+            (res, strres) = protocol.interpretMessage(instream, getFactories(), recs)
 
-    for k, v in recs:
-        print(str(k) + " :: " + str(v))
+            if res is False:
+                sys.stderr.write("Operation failed!\n")
+                if strres is not None:
+                    sys.stderr.write(strres + "\n")
+            else:
+                if strres is not None:
+                    print(strres)
+                else:
+                    print('OK')
+
+    commitRecords(targFile, recs)
