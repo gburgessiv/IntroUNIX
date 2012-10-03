@@ -1,3 +1,5 @@
+[Well, this looked better on VIM than it does on github. oh well. read plaintext please :)]
+
 This suite comes with -six- actions.
 The first five actions are intended to be correct, and function properly.
 The sixth action is intended to fail everything miserably.
