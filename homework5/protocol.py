@@ -172,7 +172,6 @@ def _updateEntries(entry, factories, records):
         m = mt[1]
         s = st[1]
         mset = [z[1] for z in records if z[1].meetsCriteria(m)]
-        print("WHUT")
         for i in mset:
             for (k,v) in [z for z in s.attributes.items() if not z[1].isNull()]:
                 linemsg = ""
