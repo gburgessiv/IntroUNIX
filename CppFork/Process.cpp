@@ -11,8 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
-#include <sys/types.h>
-#include <sys/socket.h>
+#include <sys/select.h>
 
 ///
 /// Utility functions
@@ -159,11 +158,8 @@ ssize_t Process::readchunk()
     ssize_t result = 0;
 
     assert(selectpipe(pipes::READ_PIPE) != -1);
-    // TODO: swap to select()
-    if ((result = read(selectpipe(pipes::READ_PIPE), buf, sizeof(char) * 255)) == -1)
-    {
-        raiseError("Read failed");
-    }
+
+    
 
     if (result != 0)
     {
@@ -222,7 +218,7 @@ int& Process::selectpipe(pipes::pipeno pipe)
     case pipes::ERR_WRITE_PIPE: return writepipe[2];
     }
 
-    throw std::runtime_error("Internal error: Unexpected selected pipe.");
+    assert(false);
 }
 
 void Process::exec()
