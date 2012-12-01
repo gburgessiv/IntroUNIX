@@ -39,6 +39,12 @@ public:
     
     pid_t pid() const { return m_pid; };
 
+    /* sets up the SIGPIPE handler so that SIGPIPEs are ignored.
+     * otherwise, they terminate the program. this is not the behavior
+     * that we want. we want them to be ignored (because our error checking
+     * supposedly has 100% coverage) */
+    static void initHandlers() { signal(SIGPIPE, SIG_IGN); }
+
 private:
     /* yay */
     void exec();
@@ -67,7 +73,7 @@ private:
      * in relation to the ones that remain open] without looking at how they were 
      * initialized.] */
     int& selectpipe(pipes::pipeno pipe);
-    
+
     /* meh. */
     std::vector<const char*> m_args;
     /* buffer for process output */

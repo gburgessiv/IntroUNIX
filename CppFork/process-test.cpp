@@ -7,6 +7,8 @@
 
 int main(int, char*[])
 {
+    Process::initHandlers();
+
     { //begin scope
 	Process p({"./consumer"});
 
@@ -17,6 +19,7 @@ int main(int, char*[])
 	    std::string pread = p.readline();
 	    std::cout << "Line from process[" << p.pid() << "]: " << pread;
 	}
+
     } //end scope
     std::cout << "Process object has gone out of scope.\n"
 "Check that the child process has been cleaned up and "

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <signal.h>
 
 ///
 /// Utility functions
@@ -51,7 +52,7 @@ static void pipeClose(int& p)
     }
 }
 
-static bool createsockpair(int arr[])
+static bool createpipepair(int arr[])
 {
     constexpr decltype(O_CLOEXEC) CREATE_FLAGS = 0;
 
@@ -63,12 +64,44 @@ static bool createsockpair(int arr[])
     return true;
 }
 
+/* reads an fd nonblocking. restores state to blocking/nonblocking
+ * afterward */
+bool quickread(int fd, char* buf, size_t bufsize)
+{
+    if(buf == nullptr)
+    {
+        throw std::runtime_error("Invalid buffer sent to quickread");
+    }
+
+    // Saving old state, setting nonblocking ops
+    auto old = fcntl(fd, F_GETFL);
+    bool result = true;
+    fcntl(fd, F_SETFL, old | O_NONBLOCK);
+
+    if(read(fd, buf, bufsize) == -1)
+    {
+        // EAGAIN and EWOULDBLOCK are synonymous for sockets
+        // otherwise, EAGAIN will be given for any pipe/etc
+        if(errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            errno = 0;
+            result = false;
+        }
+        else
+        {
+            raiseError("Read error from quickread");
+        }
+    }
+
+    // Ensuring old flags are reset
+    fcntl(fd, F_SETFL, old);
+
+    return result;
+}
+
 ///
 /// Class functions
 ///
-/* Initialize the process, create input/output pipes 
- * --> Creating IO is deferred to exec because yes.
- */
 Process::Process(const std::vector<std::string> &args):
     m_args(strListToChars(args)),
     readpipe {-1, -1},
@@ -78,8 +111,6 @@ Process::Process(const std::vector<std::string> &args):
     exec();
 }
 
-/* Close any open file streams or file descriptors,
-   ensure that the child has terminated */
 Process::~Process()
 {
     closeallpipes();
@@ -92,23 +123,29 @@ Process::~Process()
     }
 }
 
-/* write a string to the child process */
 void Process::write(const std::string& s)
 {
     ssize_t amt = 0;
 
     assert(selectpipe(pipes::WRITE_PIPE) != -1);
+
     amt = ::write(selectpipe(pipes::WRITE_PIPE), s.c_str(), s.size());
 
     // If we failed to write
     if(!(amt > 0 || (amt == 0 && s.empty())))
     {
+        int buf;
+
+        // If the subprocess left us a message on ERR_READ_PIPE, then exec
+        // failed. Report that instead of generic write error.
+        if(quickread(selectpipe(pipes::ERR_READ_PIPE), (char*)&buf, sizeof(buf)))
+        {
+            raiseError("Subprocess exec fail", buf);
+        }
         raiseError("Failed to write");
     }
 }
 
-/* read a full line from child process, 
-   if no line is available, block until one becomes available */
 std::string Process::readline()
 {
     std::string result;
@@ -156,21 +193,50 @@ ssize_t Process::readchunk()
 {
     char buf[255];
     ssize_t result = 0;
+    fd_set readfds;
 
     assert(selectpipe(pipes::READ_PIPE) != -1);
 
-    
+    FD_ZERO(&readfds);
+    FD_SET(selectpipe(pipes::READ_PIPE), &readfds);
+    FD_SET(selectpipe(pipes::ERR_READ_PIPE), &readfds);
 
-    if (result != 0)
+    int maxfd = std::max(selectpipe(pipes::READ_PIPE), 
+                         selectpipe(pipes::ERR_READ_PIPE));
+
+
+    auto sresult = select(maxfd + 1, &readfds, nullptr, nullptr, nullptr);
+
+    // no timeout == it can't be 0. just verifying though!
+    assert(sresult != 0);
+
+    if(sresult == -1)
     {
-        m_outbuffer += std::string(buf, result);
+        raiseError("Select call failed");
     }
+
+    // if ERR_READ_PIPE is ready to be read from, then exec failed.
+    if(FD_ISSET(selectpipe(pipes::ERR_READ_PIPE), &readfds))
+    {
+        int ebuf;
+
+        // we only pass an int for errno
+        sresult = read(selectpipe(pipes::ERR_READ_PIPE), &ebuf, sizeof(decltype(errno)));
+        raiseError("Process failed to exec", ebuf);
+    }
+
+    // otherwise READ_PIPE must be ready. if not, we'll block anyway.
+    result = read(selectpipe(pipes::READ_PIPE), buf, sizeof(char) * 255);
+
+    if(result == -1)
+    {
+        raiseError("Failed to read");
+    }
+
+    m_outbuffer.append(buf, result);
 
     return result;
 }
-
-// #define SAY_FD(n, t) std::cout << "FD " << n << " CREATED AS " #t << std::endl
-#define SAY_FD(n, t)
 
 bool Process::pipecreate()
 {
@@ -179,7 +245,7 @@ bool Process::pipecreate()
 
     int pipebuf[2];
 
-    if (!createsockpair(pipebuf))
+    if (!createpipepair(pipebuf))
     {
         return false;
     }
@@ -187,7 +253,7 @@ bool Process::pipecreate()
     selectpipe(pipes::READ_PIPE) = pipebuf[READ];
     selectpipe(pipes::SUB_WRITE_PIPE) = pipebuf[WRITE];
 
-    if (!createsockpair(pipebuf))
+    if (!createpipepair(pipebuf))
     {
         return false;
     }
@@ -195,7 +261,7 @@ bool Process::pipecreate()
     selectpipe(pipes::SUB_READ_PIPE) = pipebuf[READ];
     selectpipe(pipes::WRITE_PIPE) = pipebuf[WRITE];
 
-    if (!createsockpair(pipebuf))
+    if (!createpipepair(pipebuf))
     {
         return false;
     }
@@ -252,6 +318,7 @@ void Process::exec()
         assert(selectpipe(pipes::SUB_WRITE_PIPE) != -1);
         assert(selectpipe(pipes::ERR_WRITE_PIPE) != -1);
 
+
         if (dup2(selectpipe(pipes::SUB_READ_PIPE), fileno(stdin)) == -1)
         {
             raiseError("Duplicating read pipe went poorly.");
@@ -278,8 +345,7 @@ void Process::exec()
 
         ::write(selectpipe(pipes::ERR_WRITE_PIPE), &errno, sizeof(decltype(errno)));
 
-        _exit(0);
-        // _exit means we don't need to break
+        _exit(1);
     }
     default:
         m_pid = forkres;
