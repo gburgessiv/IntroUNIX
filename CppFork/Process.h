@@ -67,7 +67,6 @@ private:
      * in relation to the ones that remain open] without looking at how they were 
      * initialized.] */
     int& selectpipe(pipes::pipeno pipe);
-
     
     /* meh. */
     std::vector<const char*> m_args;

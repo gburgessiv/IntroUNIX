@@ -5,14 +5,12 @@
 
 #include "Process.h"
 
-int main(int argc, char *argv[])
+int main(int, char*[])
 {
     { //begin scope
 	Process p({"./consumer"});
-    
-	std::string line;
 
-    std::cout << "WAT";
+	std::string line;
 
 	while(getline(std::cin, line)) {
 	    p.write(line+"\n");

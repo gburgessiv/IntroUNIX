@@ -3,19 +3,24 @@
 #include <stdexcept>
 #include <memory>
 #include <algorithm>
+#include <iostream>
 
+#include <assert.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 ///
 /// Utility functions
 ///
-std::vector<const char*> strListToChars(const std::vector<std::string>& str)
+static std::vector<const char*> strListToChars(const std::vector<std::string>& str)
 {
     std::vector<const char*> result;
+
     std::transform(str.begin(), 
                    str.end(), 
                    std::back_inserter(result), 
@@ -26,25 +31,37 @@ std::vector<const char*> strListToChars(const std::vector<std::string>& str)
     return result;
 }
 
-void raiseError(const std::string& err, int num = errno)
+static void raiseError(const std::string& err, int num = errno)
 {
-    char errbuf[32];
+    char* errbuf = nullptr;
     char fullbuf[256];
 
-    strerror_r(num, errbuf, 32);
+    errbuf = strerror(num);
 
-    snprintf(fullbuf, 256, "%s: %s", err.c_str(), errbuf);
+    snprintf(fullbuf, 256, "%s: %s (%d)", err.c_str(), errbuf, num);
 
     throw std::runtime_error(fullbuf);
 }
 
-void pipeClose(int& p)
+static void pipeClose(int& p)
 {
     if (p >= 0)
     {
         close(p);
         p = -1;
     }
+}
+
+static bool createsockpair(int arr[])
+{
+    constexpr decltype(O_CLOEXEC) CREATE_FLAGS = 0;
+
+    if (pipe2(arr, CREATE_FLAGS) == -1)
+    {
+        return false;
+    }
+
+    return true;
 }
 
 ///
@@ -55,9 +72,9 @@ void pipeClose(int& p)
  */
 Process::Process(const std::vector<std::string> &args):
     m_args(strListToChars(args)),
-    m_pid(0),
     readpipe {-1, -1},
-    writepipe {-1, -1}
+    writepipe {-1, -1},
+    m_pid(0)
 {
     exec();
 }
@@ -67,9 +84,8 @@ Process::Process(const std::vector<std::string> &args):
 Process::~Process()
 {
     closeallpipes();
-    //
+
     // If we have a child, guarantee that it is waited on/cleaned up...
-    //
     if (m_pid != 0)
     {
         int status;
@@ -81,12 +97,13 @@ Process::~Process()
 void Process::write(const std::string& s)
 {
     ssize_t amt = 0;
+
+    assert(selectpipe(pipes::WRITE_PIPE) != -1);
     amt = ::write(selectpipe(pipes::WRITE_PIPE), s.c_str(), s.size());
 
-    switch(amt)
+    // If we failed to write
+    if(!(amt > 0 || (amt == 0 && s.empty())))
     {
-    case 0: break;
-    default: 
         raiseError("Failed to write");
     }
 }
@@ -95,7 +112,6 @@ void Process::write(const std::string& s)
    if no line is available, block until one becomes available */
 std::string Process::readline()
 {
-    char buff[255];
     std::string result;
 
     while(!readbufferedline(result))
@@ -104,7 +120,7 @@ std::string Process::readline()
 
         if (size == 0)
         {
-            return "";
+            break;
         }
     }
 
@@ -128,6 +144,8 @@ bool Process::readbufferedline(std::string& into)
     }
     else
     {
+        // include newline in result
+        at += 1;
         into += m_outbuffer.substr(0, at);
         m_outbuffer.erase(0, at);
     }
@@ -140,6 +158,7 @@ ssize_t Process::readchunk()
     char buf[255];
     ssize_t result = 0;
 
+    assert(selectpipe(pipes::READ_PIPE) != -1);
     // TODO: swap to select()
     if ((result = read(selectpipe(pipes::READ_PIPE), buf, sizeof(char) * 255)) == -1)
     {
@@ -154,6 +173,9 @@ ssize_t Process::readchunk()
     return result;
 }
 
+// #define SAY_FD(n, t) std::cout << "FD " << n << " CREATED AS " #t << std::endl
+#define SAY_FD(n, t)
+
 bool Process::pipecreate()
 {
     constexpr int READ = 0;
@@ -161,7 +183,7 @@ bool Process::pipecreate()
 
     int pipebuf[2];
 
-    if (pipe2(pipebuf, O_CLOEXEC) == -1)
+    if (!createsockpair(pipebuf))
     {
         return false;
     }
@@ -169,7 +191,7 @@ bool Process::pipecreate()
     selectpipe(pipes::READ_PIPE) = pipebuf[READ];
     selectpipe(pipes::SUB_WRITE_PIPE) = pipebuf[WRITE];
 
-    if (pipe2(pipebuf, O_CLOEXEC) == -1)
+    if (!createsockpair(pipebuf))
     {
         return false;
     }
@@ -177,7 +199,7 @@ bool Process::pipecreate()
     selectpipe(pipes::SUB_READ_PIPE) = pipebuf[READ];
     selectpipe(pipes::WRITE_PIPE) = pipebuf[WRITE];
 
-    if (pipe2(pipebuf, O_CLOEXEC) == -1)
+    if (!createsockpair(pipebuf))
     {
         return false;
     }
@@ -217,7 +239,7 @@ void Process::exec()
 
     auto forkres = fork();
 
-    switch(forkres = fork())
+    switch(forkres)
     {
     case -1:
         closeallpipes();
@@ -226,14 +248,22 @@ void Process::exec()
         // intentional no break -- exception takes care of it
     case 0:
     {
-        if (dup2(writepipe[pipes::SUB_WRITE_PIPE], fileno(stdout)) == -1)
+        pipeClose(selectpipe(pipes::READ_PIPE));
+        pipeClose(selectpipe(pipes::WRITE_PIPE));
+        pipeClose(selectpipe(pipes::ERR_READ_PIPE));
+
+        assert(selectpipe(pipes::SUB_READ_PIPE) != -1);
+        assert(selectpipe(pipes::SUB_WRITE_PIPE) != -1);
+        assert(selectpipe(pipes::ERR_WRITE_PIPE) != -1);
+
+        if (dup2(selectpipe(pipes::SUB_READ_PIPE), fileno(stdin)) == -1)
         {
-            raiseError("Duplicating pipe went wrong");
+            raiseError("Duplicating read pipe went poorly.");
         }
 
-        if (dup2(readpipe[pipes::SUB_READ_PIPE], fileno(stdin)) == -1)
+        if (dup2(selectpipe(pipes::SUB_WRITE_PIPE), fileno(stdout)) == -1)
         {
-            raiseError("Again.");
+            raiseError("Duplicating write pipe went poorly");
         }
 
         const char* filename = m_args[0];
@@ -257,9 +287,14 @@ void Process::exec()
     }
     default:
         m_pid = forkres;
+
         pipeClose(selectpipe(pipes::SUB_READ_PIPE));
         pipeClose(selectpipe(pipes::SUB_WRITE_PIPE));
         pipeClose(selectpipe(pipes::ERR_WRITE_PIPE));
+
+        assert(selectpipe(pipes::READ_PIPE) != -1);
+        assert(selectpipe(pipes::WRITE_PIPE) != -1);
+        assert(selectpipe(pipes::ERR_READ_PIPE) != -1);
     }
 }
 
