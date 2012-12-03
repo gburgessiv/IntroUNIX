@@ -14,6 +14,8 @@
 #include <sys/select.h>
 #include <signal.h>
 
+unsigned int Process::m_runningProcesses = 0;
+
 ///
 /// Utility functions
 ///
@@ -68,7 +70,7 @@ static bool createpipepair(int arr[])
  * afterward */
 bool quickread(int fd, char* buf, size_t bufsize)
 {
-    if(buf == nullptr)
+    if (buf == nullptr)
     {
         throw std::runtime_error("Invalid buffer sent to quickread");
     }
@@ -78,11 +80,11 @@ bool quickread(int fd, char* buf, size_t bufsize)
     bool result = true;
     fcntl(fd, F_SETFL, old | O_NONBLOCK);
 
-    if(read(fd, buf, bufsize) == -1)
+    if (read(fd, buf, bufsize) == -1)
     {
         // EAGAIN and EWOULDBLOCK are synonymous for sockets
         // otherwise, EAGAIN will be given for any pipe/etc
-        if(errno == EAGAIN || errno == EWOULDBLOCK)
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
         {
             errno = 0;
             result = false;
@@ -100,6 +102,94 @@ bool quickread(int fd, char* buf, size_t bufsize)
 }
 
 ///
+/// Signal handler functions
+///
+namespace sighandlers
+{
+    // in retrospect, this probably could have been better implemented as a singleton. but at the same time, maybe not.
+    // meh. it works.
+
+    int errpipes[2] = {-1, -1};
+    int execerror = 0;
+
+    static int& errorReadPipe()
+    {
+        return errpipes[0];
+    }
+    
+    static int& errorWritePipe()
+    {
+        return errpipes[1];
+    }
+
+    static bool execFailed()
+    {
+        return execerror != 0;
+    }
+
+    static int execErrno()
+    {
+        return execerror;
+    }
+
+    static void destroy()
+    {
+        pipeClose(errpipes[0]);
+        pipeClose(errpipes[1]);
+    }
+
+    void sigchldHandler(int)
+    {
+        if (errorReadPipe() == -1)
+        {
+            return;
+        }
+
+        if (read(errorReadPipe(), &execerror, sizeof(execerror)) == -1)
+        {
+            // if there was no message
+            if (errno == EAGAIN)
+            {
+                execerror = 0;
+            }
+        }
+    }
+
+    void init()
+    {
+        execerror = 0;
+        pipeClose(errpipes[0]);
+        pipeClose(errpipes[1]);
+
+        if (pipe(errpipes) == -1)
+        {
+            raiseError("Failed to init pipes for sig handler");
+        }
+
+        // set the read pipe to nonblocking communications
+        if (fcntl(errorReadPipe(), F_SETFL, fcntl(errorReadPipe(), F_GETFL) | O_NONBLOCK) == -1)
+        {
+            raiseError("Couldn't set pipes to nonblocking");
+        }
+
+        struct sigaction sa;
+
+        sa.sa_handler = &sigchldHandler;
+
+        if (sigaction(SIGCHLD, &sa, nullptr) == -1)
+        {
+            raiseError("Failed to set sig handler");
+        }
+
+        if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
+        {
+            raiseError("Failed to set SIGPIPE");
+        }
+    }
+}
+
+
+///
 /// Class functions
 ///
 Process::Process(const std::vector<std::string> &args):
@@ -108,7 +198,20 @@ Process::Process(const std::vector<std::string> &args):
     writepipe {-1, -1},
     m_pid(0)
 {
+    // if the sighandlers have been disposed of/not initialized yet...
+    if (m_runningProcesses == 0)
+    {
+        sighandlers::init();
+    }
+
+    ++m_runningProcesses;
+
     exec();
+
+    if (sighandlers::execFailed())
+    {
+        raiseError("Exec failed", sighandlers::execErrno());
+    }
 }
 
 Process::~Process()
@@ -121,6 +224,11 @@ Process::~Process()
         int status;
         waitpid(m_pid, &status, 0);
     }
+
+    if (--m_runningProcesses == 0)
+    {
+        sighandlers::destroy();
+    }
 }
 
 void Process::write(const std::string& s)
@@ -132,25 +240,15 @@ void Process::write(const std::string& s)
     amt = ::write(selectpipe(pipes::WRITE_PIPE), s.c_str(), s.size());
 
     // If we failed to write
-    if(!(amt > 0 || (amt == 0 && s.empty())))
+    if (!(amt > 0 || (amt == 0 && s.empty())))
     {
-        int buf;
-
-        // If the subprocess left us a message on ERR_READ_PIPE, then exec
-        // failed. Report that instead of generic write error.
-        if(quickread(selectpipe(pipes::ERR_READ_PIPE), (char*)&buf, sizeof(buf)))
-        {
-            raiseError("Subprocess exec fail", buf);
-        }
         raiseError("Failed to write");
     }
 }
-
-std::string Process::readline()
-{
+std::string Process::readline() {
     std::string result;
 
-    while(!readbufferedline(result))
+    while (!readbufferedline(result))
     {
         ssize_t size = readchunk();
 
@@ -193,42 +291,12 @@ ssize_t Process::readchunk()
 {
     char buf[255];
     ssize_t result = 0;
-    fd_set readfds;
 
     assert(selectpipe(pipes::READ_PIPE) != -1);
 
-    FD_ZERO(&readfds);
-    FD_SET(selectpipe(pipes::READ_PIPE), &readfds);
-    FD_SET(selectpipe(pipes::ERR_READ_PIPE), &readfds);
-
-    int maxfd = std::max(selectpipe(pipes::READ_PIPE), 
-                         selectpipe(pipes::ERR_READ_PIPE));
-
-
-    auto sresult = select(maxfd + 1, &readfds, nullptr, nullptr, nullptr);
-
-    // no timeout == it can't be 0. just verifying though!
-    assert(sresult != 0);
-
-    if(sresult == -1)
-    {
-        raiseError("Select call failed");
-    }
-
-    // if ERR_READ_PIPE is ready to be read from, then exec failed.
-    if(FD_ISSET(selectpipe(pipes::ERR_READ_PIPE), &readfds))
-    {
-        int ebuf;
-
-        // we only pass an int for errno
-        sresult = read(selectpipe(pipes::ERR_READ_PIPE), &ebuf, sizeof(decltype(errno)));
-        raiseError("Process failed to exec", ebuf);
-    }
-
-    // otherwise READ_PIPE must be ready. if not, we'll block anyway.
     result = read(selectpipe(pipes::READ_PIPE), buf, sizeof(char) * 255);
 
-    if(result == -1)
+    if (result == -1)
     {
         raiseError("Failed to read");
     }
@@ -261,14 +329,6 @@ bool Process::pipecreate()
     selectpipe(pipes::SUB_READ_PIPE) = pipebuf[READ];
     selectpipe(pipes::WRITE_PIPE) = pipebuf[WRITE];
 
-    if (!createpipepair(pipebuf))
-    {
-        return false;
-    }
-    
-    selectpipe(pipes::ERR_READ_PIPE) = pipebuf[READ];
-    selectpipe(pipes::ERR_WRITE_PIPE) = pipebuf[WRITE];
-
     return true;
 }
 
@@ -280,8 +340,6 @@ int& Process::selectpipe(pipes::pipeno pipe)
     case pipes::WRITE_PIPE: return writepipe[0];
     case pipes::SUB_READ_PIPE: return readpipe[1];
     case pipes::SUB_WRITE_PIPE: return writepipe[1];
-    case pipes::ERR_READ_PIPE: return readpipe[2];
-    case pipes::ERR_WRITE_PIPE: return writepipe[2];
     }
 
     assert(false);
@@ -312,12 +370,10 @@ void Process::exec()
     {
         pipeClose(selectpipe(pipes::READ_PIPE));
         pipeClose(selectpipe(pipes::WRITE_PIPE));
-        pipeClose(selectpipe(pipes::ERR_READ_PIPE));
+        pipeClose(sighandlers::errorReadPipe());
 
         assert(selectpipe(pipes::SUB_READ_PIPE) != -1);
         assert(selectpipe(pipes::SUB_WRITE_PIPE) != -1);
-        assert(selectpipe(pipes::ERR_WRITE_PIPE) != -1);
-
 
         if (dup2(selectpipe(pipes::SUB_READ_PIPE), fileno(stdin)) == -1)
         {
@@ -331,38 +387,61 @@ void Process::exec()
 
         const char* filename = m_args[0];
 
-        // i hate const_cast. :(
         char** args = const_cast<char**>((m_args.size() > 1) ? &m_args[1] : nullptr);
 
-        execvp(filename, args);
+        char okc = (char)0;
 
-        //
+        // tell other program we've started. if that fails then go directly to saying "failed"
+        if (::write(fileno(stdout), &okc, sizeof(char)) != -1)
+        {
+            execvp(filename, args);
+        }
+
         // if exec fails, report error, close file descriptors, and get out.
-        //
-
-        // nonblocking because yes.
-        fcntl(selectpipe(pipes::ERR_WRITE_PIPE), F_SETFL, O_NONBLOCK);
-
-        ::write(selectpipe(pipes::ERR_WRITE_PIPE), &errno, sizeof(decltype(errno)));
+        if (sighandlers::errorWritePipe() >= 0)
+        {
+            ::write(sighandlers::errorWritePipe(), &errno, sizeof(decltype(errno)));
+        }
 
         _exit(1);
     }
     default:
+    {
         m_pid = forkres;
 
         pipeClose(selectpipe(pipes::SUB_READ_PIPE));
         pipeClose(selectpipe(pipes::SUB_WRITE_PIPE));
-        pipeClose(selectpipe(pipes::ERR_WRITE_PIPE));
 
         assert(selectpipe(pipes::READ_PIPE) != -1);
         assert(selectpipe(pipes::WRITE_PIPE) != -1);
-        assert(selectpipe(pipes::ERR_READ_PIPE) != -1);
+
+        // wait for the program to output (char)0, which means it is running.
+        // then wait 50ms for the program to fail/pass exec(). 
+        char inbuf = '\0';
+        struct timeval maxtime;
+        fd_set rdfds;
+
+        FD_ZERO(&rdfds);
+        FD_SET(selectpipe(pipes::READ_PIPE), &rdfds);
+
+        maxtime.tv_sec = 1;
+        if (select(selectpipe(pipes::READ_PIPE) + 1, &rdfds, nullptr, nullptr, &maxtime) == -1)
+        {
+            raiseError("Select failed in waiting for new process to spawn");
+        }
+
+        // clearing out initial byte
+        ::read(selectpipe(pipes::READ_PIPE), &inbuf, sizeof(char));
+        
+        // wait a max of 50ms for program to report failure
+        usleep(50 * 1000);
+    }
     }
 }
 
 void Process::closeallpipes()
 {
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < 2; ++i)
     {
         pipeClose(readpipe[i]);
         pipeClose(writepipe[i]);

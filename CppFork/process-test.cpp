@@ -7,7 +7,7 @@
 
 int main(int, char*[])
 {
-    Process::initHandlers();
+    sighandlers::init();
 
     { //begin scope
 	Process p({"./consumer"});

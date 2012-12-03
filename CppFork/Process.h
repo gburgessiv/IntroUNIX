@@ -14,10 +14,17 @@ namespace pipes
         READ_PIPE,
         WRITE_PIPE,
         SUB_READ_PIPE,
-        SUB_WRITE_PIPE,
-        ERR_READ_PIPE,
-        ERR_WRITE_PIPE
+        SUB_WRITE_PIPE
     };
+}
+
+/* sets up the SIGPIPE handler so that SIGPIPEs are ignored.
+ * otherwise, they terminate the program. this is not the behavior
+ * that we want. we want them to be ignored (because our error checking
+ * supposedly has 100% coverage) */
+namespace sighandlers
+{
+    void init();
 }
 
 class Process
@@ -38,12 +45,6 @@ public:
     std::string readline();
     
     pid_t pid() const { return m_pid; };
-
-    /* sets up the SIGPIPE handler so that SIGPIPEs are ignored.
-     * otherwise, they terminate the program. this is not the behavior
-     * that we want. we want them to be ignored (because our error checking
-     * supposedly has 100% coverage) */
-    static void initHandlers() { signal(SIGPIPE, SIG_IGN); }
 
 private:
     /* yay */
@@ -79,10 +80,12 @@ private:
     /* buffer for process output */
     std::string m_outbuffer;
     /* added a third pipe for exec fail r/w. */
-    int readpipe[3];    
-    int writepipe[3];
+    int readpipe[2];    
+    int writepipe[2];
 
     pid_t m_pid;
+
+    static unsigned int m_runningProcesses;
 };
 
 #endif // _PROCESS_H_
