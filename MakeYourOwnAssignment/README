@@ -1,0 +1,24 @@
+I created this assignment for one simple reason: manual testing is a PAIN.
+
+In my experience with programming, not always will hitting the 'run' button be enough to ensure a program runs correctly. An example of where this is not enough is in our recent C++ Process Object homework. We had to:
+- Compile it
+- Run it
+- See that a process was spawned
+- Give it input (which could be the same each time)
+- See that the spawned process died
+- See that all of the file descriptors were out of scope post-destruction
+
+For me, this series of events took 20-25 seconds per "test". This wasn't a huge issue; it was fairly reasonable actually. My primary problem was that it was repetitive. And I hated doing it. Having to go through the same 5 or 6 steps just to get a "yay it worked" or "boo it failed" got annoying after the third time.
+
+As a result, my proposition is to make a script that will automate testing (of external events/etc). I never ended up making one for the Process Object homework, but I've made many of them for other projects. Not only do they save time (a recent compile-test cycle I had was cut from ~1m20s to ~15s by a script. it required copying a directory of files to another dir, running qmake/make clean/make in two seperate subdirectories, then running 4 instances of a client program and 1 of a server), but they help with concentration. And it's not like they're difficult to write-- the script was literally copy/pasting commands into a file and marking it executable.
+
+So, the advantages of this will be:
+    I. Students will demonstrate their knowledge of the shell by showing that they can make a script that (fully or partially) tests a project
+    II. Students will learn that scripts are disposable. They don't have to be 300-line behemoths; they can be 10 line snippets that save time.
+    III. Students will see value in automation, and how to chain different commands together to make a useful result.
+
+(Note: A program to be tested could also be supplied as part of the assignment. Just say "verify that it has these side effects, this output, etc." I just think it's more effective to have a student see how much easier it is to just write a program and run it on a whim to test out their old program)
+
+(Note 2: This isn't asking for unit tests, as I believe those are out of the scope of the class. Just a quick script that will validate that a program's side-effects are as intended. Because a program without side effect has very limited use.)
+
+Also, I put together an example of a failing test script (for when we want the CppFork program to fail) and a succeeding test script (for when we want the CppFork program to succeed) to test how the program works in both cases. Both scripts seem to work, but I put all of 5 minutes into them. So if they miss a few cases, I apologize. :P
