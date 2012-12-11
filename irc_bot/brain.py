@@ -1,6 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import irc_callbacks
+import re
 
 """
 This is brain.py. It recieves messages and calls appropriate functions (if one exists)
@@ -8,7 +9,8 @@ in order to respond to these messages. Below is a callbacks Dict, where all of t
 are linked to their triggers. 
 """
 callbacks = { "hello": irc_callbacks.sayHi,
-              "random": irc_callbacks.randomNumber }
+              ".random": irc_callbacks.randomNumber,
+              ".help": irc_callbacks.help }
 
 def think(sender, message):
     global callbacks
@@ -18,8 +20,10 @@ def think(sender, message):
     if message is None:
         raise ValueError("Message is None")
 
-    if message.find(' ') != -1:
-        cmd, args = message.split(' ', 1)
+    message = message.strip()
+
+    if re.search('\s+', message):
+        cmd, args = re.split('\s+', message, 1)
     else:
         cmd = message
         args = ""
@@ -40,6 +44,7 @@ def think(sender, message):
     return result
 
 if __name__ == '__main__':
+    # Could've used unittest, but that was a bit much for a single function
     print("Running unit tests...")
     
     ### START OF UNIT TESTS ###
@@ -52,6 +57,8 @@ if __name__ == '__main__':
 
     def throwParty(user, arg):
         raise ValueError("Testing.")
+    
+    old_callbacks = callbacks
 
     callbacks = { "hi": sayHi,
                   "hello": sayHi,
@@ -101,3 +108,12 @@ if __name__ == '__main__':
     ### END OF UNIT TESTS ###
 
     print("Passed.")
+    print("Say stuff and this will think about it. Your username will be \"Tester\"")
+
+    callbacks = old_callbacks
+
+    while True:
+        z = input()
+        n = think("Tester", z)
+        if n:
+            print(n)
